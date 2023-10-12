@@ -7,10 +7,6 @@ on:
         default: "ubuntu-latest"
         required: false
         type: string
-      github_branch_name:
-        description: "Default Github environment variable - Branch name"
-        required: true
-        type: string
       github_sha:
         description: "Default Github environment variable - commit SHA"
         required: true
@@ -62,7 +58,7 @@ jobs:
       - name: Create docker image name
         id: docker-image
         run: |
-          BRANCH_NAME=${{ inputs.github_branch_name }}
+          BRANCH_NAME=${{ inputs.ref_name }}
           IMAGE_NAME=${BRANCH_NAME}_${{ inputs.github_sha }}
           echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_OUTPUT
       - name: Extract repository name
