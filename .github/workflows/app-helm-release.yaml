@@ -1,0 +1,136 @@
+name: Build and Deploy Application
+on:
+  workflow_call:
+    inputs:
+      os_version:
+        description: "Pipeline operating system"
+        default: "ubuntu-latest"
+        required: false
+        type: string
+      github_branch_name:
+        description: "Default Github environment variable - Branch name"
+        required: true
+        type: string
+      github_sha:
+        description: "Default Github environment variable - commit SHA"
+        required: true
+        type: string
+      github_repository:
+        description: "Default Github environment variable - repository"
+        required: true
+        type: string
+      github_run_number:
+        description: "Default Github environment variable - run number"
+        required: true
+        type: string
+      github_ref_name:
+        description: "Default Github environment variable - ref name"
+        required: true
+        type: string
+      docker_context:
+        description: "Specifies the base directory for Docker image building"
+        default: "."
+        required: false
+        type: string
+      docker_file_name:
+        description: "Specifies the path to the Dockerfile used in the image building process"
+        default: "./Dockerfile"
+        required: false
+        type: string
+      helm_context:
+        description: "Specifies the name of the directory containing the helm charts"
+        default: "helm"
+        required: false
+        type: string
+      helm_url_repository:
+        description: "URL to helm repository"
+        required: true
+        type: string
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+      TOKEN_HELM_STORE:
+        required: true
+jobs:
+  build-and-push:
+    runs-on: ${{ inputs.os_version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+      - name: Create docker image name
+        id: docker-image
+        run: |
+          BRANCH_NAME=${{ inputs.github_branch_name }}
+          IMAGE_NAME=${BRANCH_NAME}_${{ inputs.github_sha }}
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+      - name: Extract repository name
+        id: extract-repository-name
+        run: |
+          REPO_NAME=$(echo "${{ inputs.repository }}" | cut -d '/' -f 2)
+          echo "REPO_NAME=${REPO_NAME}" >> $GITHUB_OUTPUT
+      - name: Login to Docker registry
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: "${{ secrets.DOCKERHUB_USERNAME }}"
+          password: "${{ secrets.DOCKERHUB_TOKEN }}"
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.docker_context }}
+          file: ${{ inputs.docker_file_name }}
+          push: true
+          tags: |
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.extract-repository-name.outputs.REPO_NAME }}:${{ steps.docker-image.outputs.IMAGE_NAME }}
+      - name: Extract Image sha256
+        id: image-digest
+        run: |
+          IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ secrets.DOCKERHUB_USERNAME }}/${{ steps.extract-repository-name.outputs.REPO_NAME }}:${{ steps.docker-image.outputs.IMAGE_NAME }}" | cut -d "@" -f 2)
+          echo "IMAGE_DIGEST=${IMAGE_DIGEST}" >> $GITHUB_OUTPUT
+      - name: Setup yq portable command-line YAML, JSON, XML, CSV, TOML and properties processor
+        uses: mikefarah/yq@v4.35.2
+      - name: Update Yaml Files
+        run: |
+          helm_folder="${{ inputs.helm_context }}"
+          version_helm="$(cat VERSION_HELM)"
+          run_number="${{ inputs.github_run_number }}"
+          image_name="${{ steps.docker-image.outputs.IMAGE_NAME }}"
+          image_digest="${{ steps.image-digest.outputs.IMAGE_DIGEST }}"
+          account="${{ secrets.DOCKERHUB_USERNAME }}"
+          repo_name="${{ steps.extract-repository-name.outputs.REPO_NAME }}"
+
+          yq -i ".version = \"${version_helm}.${run_number}\"" "./${helm_folder}/Chart.yaml"
+          yq -i ".appVersion = \"$(cat VERSION)\"" "./${helm_folder}/Chart.yaml"
+
+          yq -i '.image.repository = "'"${account}/${repo_name}"'"' "./${helm_folder}/values.yaml"
+          yq -i '.image.tag = "'"${image_name}@${image_digest}"'"' "./${helm_folder}/values.yaml"
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: "v3.11.1"
+      - name: Package Helm Chart
+        run: |
+          helm package ./${{ inputs.helm_context }}
+          helm repo index ./${{ inputs.helm_context }} --url ${{ inputs.helm_url_repository }}
+      - name: Clone Helm Chart Repo
+        uses: actions/checkout@v3
+        with:
+          repository: eduardo854/helm-store
+          ref: pre-deployment
+          token: "${{ secrets.TOKEN_HELM_STORE }}"
+          path: ./helm-store
+      - name: Copy Chart Package
+        run: |
+          mkdir -p helm-store/app/${{ steps.extract-repository-name.outputs.REPO_NAME }}
+          cp *.tgz helm-store/app/${{ steps.extract-repository-name.outputs.REPO_NAME }}/
+      - name: Commit and Push Changes
+        run: |
+          cd helm-store/
+          git config user.name "$GITHUB_ACTOR"
+          git config user.email "$GITHUB_ACTOR@users.noreply.github.com"
+          git pull origin pre-deployment
+          git add .
+          git commit -m "${{ github.ref_name }}"
+          git push origin pre-deployment
