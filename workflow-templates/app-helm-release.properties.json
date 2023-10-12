@@ -1,4 +1,8 @@
 {
     "name": "Build and Deploy Application",
-    "description": "Build and Deploy Application starter workflow."
+    "description": "Create and Deploy Applications with Helm Charts Using a Starter Workflow for Helm Catalogs.",
+    "": "profile",
+    "categories": [
+        "Deploy"
+    ]
 }
